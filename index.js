@@ -1,4 +1,8 @@
 'use strict'
+const allowIP = []
+if (typeof ENV_ALLOW_IP !== "undefined") {
+    Array.prototype.push.apply(allowIP, JSON.parse(ENV_ALLOW_IP))
+}
 
 /**
  * static files (404.html, sw.js, conf.js)
@@ -73,6 +77,10 @@ function checkUrl(u) {
  */
 async function fetchHandler(e) {
     const req = e.request
+    let reqIP = req.headers.get('cf-connecting-ip')
+    if (allowIP.length && !allowIP.includes(reqIP)) {
+        return new Response(`${reqIP} Access denied.`, { status: 403 })
+    }
     const urlStr = req.url
     const urlObj = new URL(urlStr)
     let path = urlObj.searchParams.get('q')
