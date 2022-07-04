@@ -4,17 +4,6 @@ if (typeof ENV_ALLOW_IP !== "undefined") {
     Array.prototype.push.apply(allowIP, JSON.parse(ENV_ALLOW_IP))
 }
 
-/**
- * static files (404.html, sw.js, conf.js)
- */
-const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'
-// 前缀，如果自定义路由为example.com/gh/*，将PREFIX改为 '/gh/'，注意，少一个杠都会错！
-const PREFIX = '/'
-// 分支文件使用jsDelivr镜像的开关，0为关闭，默认开启
-const Config = {
-    jsdelivr: 1
-}
-
 /** @type {RequestInit} */
 const PREFLIGHT_INIT = {
     status: 204,
@@ -25,14 +14,6 @@ const PREFLIGHT_INIT = {
     }),
 }
 
-
-const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i
-const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i
-const exp3 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i
-const exp4 = /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i
-const exp5 = /^(?:https?:\/\/)?gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i
-const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i
-
 /**
  * @param {any} body
  * @param {number} status
@@ -40,7 +21,7 @@ const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i
  */
 function makeRes(body, status = 200, headers = {}) {
     headers['access-control-allow-origin'] = '*'
-    return new Response(body, {status, headers})
+    return new Response(body, { status, headers })
 }
 
 
@@ -63,14 +44,10 @@ addEventListener('fetch', e => {
 })
 
 
-function checkUrl(u) {
-    for (let i of [exp1, exp2, exp3, exp4, exp5, exp6]) {
-        if (u.search(i) === 0) {
-            return true
-        }
-    }
-    return false
+function checkUrl(path) {
+    return path.search(/^.+?\/.+?\/(?:info|git-).*$/i) == 0
 }
+
 
 /**
  * @param {FetchEvent} e
@@ -79,61 +56,43 @@ async function fetchHandler(e) {
     const req = e.request
     let reqIP = req.headers.get('cf-connecting-ip')
     if (allowIP.length && !allowIP.includes(reqIP)) {
-        return new Response(`${reqIP} Access denied.`, { status: 403 })
+        return makeRes(`${reqIP} Access denied.`, 403)
     }
     const urlStr = req.url
     const urlObj = new URL(urlStr)
-    let path = urlObj.searchParams.get('q')
-    if (path) {
-        return Response.redirect('https://' + urlObj.host + PREFIX + path, 301)
-    }
-    // cfworker 会把路径中的 `//` 合并成 `/`
-    path = urlObj.href.substr(urlObj.origin.length + PREFIX.length).replace(/^https?:\/+/, 'https://')
-    if (path.search(exp1) === 0 || path.search(exp5) === 0 || path.search(exp6) === 0 || path.search(exp3) === 0 || path.search(exp4) === 0) {
+    let path = urlObj.href.substring(urlObj.origin.length + 1)
+    if (checkUrl(path)) {
         return httpHandler(req, path)
-    } else if (path.search(exp2) === 0) {
-        if (Config.jsdelivr) {
-            const newUrl = path.replace('/blob/', '@').replace(/^(?:https?:\/\/)?github\.com/, 'https://cdn.jsdelivr.net/gh')
-            return Response.redirect(newUrl, 302)
-        } else {
-            path = path.replace('/blob/', '/raw/')
-            return httpHandler(req, path)
-        }
-    } else if (path.search(exp4) === 0) {
-        const newUrl = path.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1').replace(/^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh')
-        return Response.redirect(newUrl, 302)
+    } else if (path.length) {
+        return makeRes(`gh-proxy : Bad Request.`, 400)
     } else {
-        return fetch(ASSET_URL + path)
+        return makeRes(`gh-proxy : Hi there.`)
     }
 }
 
 
 /**
  * @param {Request} req
- * @param {string} pathname
+ * @param {string} path
  */
-function httpHandler(req, pathname) {
-    const reqHdrRaw = req.headers
+function httpHandler(req, path) {
+    const reqHeaderRaw = req.headers
 
     // preflight
     if (req.method === 'OPTIONS' &&
-        reqHdrRaw.has('access-control-request-headers')
+        reqHeaderRaw.has('access-control-request-headers')
     ) {
         return new Response(null, PREFLIGHT_INIT)
     }
 
-    const reqHdrNew = new Headers(reqHdrRaw)
+    const reqHeaderNew = new Headers(reqHeaderRaw)
 
-    let urlStr = pathname
-    if (urlStr.startsWith('github')) {
-        urlStr = 'https://' + urlStr
-    }
-    const urlObj = newUrl(urlStr)
+    const urlObj = newUrl('https://github.com/' + path)
 
     /** @type {RequestInit} */
     const reqInit = {
         method: req.method,
-        headers: reqHdrNew,
+        headers: reqHeaderNew,
         redirect: 'manual',
         body: req.body
     }
@@ -148,30 +107,30 @@ function httpHandler(req, pathname) {
  */
 async function proxy(urlObj, reqInit) {
     const res = await fetch(urlObj.href, reqInit)
-    const resHdrOld = res.headers
-    const resHdrNew = new Headers(resHdrOld)
+    const resHeaderOld = res.headers
+    const resHeaderNew = new Headers(resHeaderOld)
 
     const status = res.status
 
-    if (resHdrNew.has('location')) {
-        let _location = resHdrNew.get('location')
+    if (resHeaderNew.has('location')) {
+        let _location = resHeaderNew.get('location')
         if (checkUrl(_location))
-            resHdrNew.set('location', PREFIX + _location)
+            resHeaderNew.set('location', '/' + _location)
         else {
             reqInit.redirect = 'follow'
             return proxy(newUrl(_location), reqInit)
         }
     }
-    resHdrNew.set('access-control-expose-headers', '*')
-    resHdrNew.set('access-control-allow-origin', '*')
+    resHeaderNew.set('access-control-expose-headers', '*')
+    resHeaderNew.set('access-control-allow-origin', '*')
 
-    resHdrNew.delete('content-security-policy')
-    resHdrNew.delete('content-security-policy-report-only')
-    resHdrNew.delete('clear-site-data')
+    resHeaderNew.delete('content-security-policy')
+    resHeaderNew.delete('content-security-policy-report-only')
+    resHeaderNew.delete('clear-site-data')
 
     return new Response(res.body, {
         status,
-        headers: resHdrNew,
+        headers: resHeaderNew,
     })
 }
 
